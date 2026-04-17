@@ -13,6 +13,10 @@ import java.util.List;
 public record AgentCapabilities(boolean streaming, boolean pushNotifications, boolean stateTransitionHistory,
                                 List<AgentExtension> extensions) {
 
+    public AgentCapabilities {
+        extensions = extensions == null ? List.of() : extensions;
+    }
+
     public static class Builder {
 
         private boolean streaming;
