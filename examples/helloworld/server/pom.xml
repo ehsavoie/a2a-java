@@ -82,11 +82,11 @@
                     <groupId>io.quarkus</groupId>
                     <artifactId>quarkus-opentelemetry</artifactId>
                 </dependency>
-                <dependency>
+<!--                <dependency>
                     <groupId>io.quarkus</groupId>
                     <artifactId>quarkus-observability-devservices-lgtm</artifactId>
                     <scope>provided</scope>
-                </dependency>
+                </dependency>-->
             </dependencies>
         </profile>
     </profiles>

@@ -35,6 +35,7 @@
 
     <modules>
         <module>client</module>
+        <module>orchestrator</module>
         <module>server</module>
     </modules>
 </project>

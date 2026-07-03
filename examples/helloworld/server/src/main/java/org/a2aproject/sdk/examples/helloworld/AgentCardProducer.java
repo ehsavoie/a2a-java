@@ -28,6 +28,7 @@ public class AgentCardProducer {
         return AgentCard.builder()
                 .name("Hello World Agent")
                 .description("Just a hello world agent")
+                .url(getAgentInterface().url())
                 .supportedInterfaces(Collections.singletonList(getAgentInterface()))
                 .version("1.0.0")
                 .documentationUrl("http://example.com/docs")
