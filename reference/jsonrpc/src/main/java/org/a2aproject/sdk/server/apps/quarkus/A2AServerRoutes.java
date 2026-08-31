@@ -248,6 +248,8 @@ public class A2AServerRoutes {
                         .setStatusCode(200)
                         .putHeader(CONTENT_TYPE, APPLICATION_JSON)
                         .end(agentCard);
+                } catch (IllegalArgumentException e) {
+                    ctx.response().setStatusCode(400).end(e.getMessage());
                 } catch (JsonProcessingException e) {
                     ctx.response().setStatusCode(500).end("Internal Server Error");
                 }
@@ -437,15 +439,14 @@ public class A2AServerRoutes {
      *
      * @param rc the Vert.x routing context (must contain a {@code tenant} path parameter)
      * @return the tenant-specific agent card as a JSON string
+     * @throws IllegalArgumentException if the {@code tenant} path parameter is absent
      * @throws JsonProcessingException if serialization fails
      */
     public String getTenantAgentCard(RoutingContext rc) throws JsonProcessingException {
-        // Try named regex group first; fall back to parsing the path directly.
-        // Path is /.well-known/{tenant}/agent-card.json
+        // Route is /.well-known/{tenant}/agent-card.json — the named capture group must be present.
         String tenant = rc.pathParam("tenant");
         if (tenant == null) {
-            String[] parts = rc.normalizedPath().split("/");
-            tenant = parts.length >= 3 ? parts[2] : null;
+            throw new IllegalArgumentException("Missing tenant path parameter");
         }
         cacheMetadata.getHttpHeadersMap().forEach((k, v) -> rc.response().putHeader(k, v));
         return JsonUtil.toJson(jsonRpcHandler.getAgentCard(tenant));
