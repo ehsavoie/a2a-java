@@ -372,12 +372,24 @@ public class A2ACardResolverTest {
 
     @Test
     public void testGetAgentCard_httpError_bothFail_throwsLastError() throws Exception {
+        // Both the primary URL and the fallback return 404 — verify the fallback is attempted and the last error is thrown.
+        TestHttpClient client = createTestClient();
+        client.status = 404;
+        A2ACardResolver resolver = A2ACardResolver.builder().httpClient(client).baseUrl("http://example.com").build();
+        A2AClientHTTPError error = assertThrows(A2AClientHTTPError.class, resolver::getAgentCard);
+        assertEquals(404, error.getCode());
+        assertEquals(2, client.urlsCalled.size());
+    }
+
+    @Test
+    public void testGetAgentCard_nonNotFound_noFallback() throws Exception {
+        // A 5xx from the primary URL is not a URL-format issue, so no fallback is attempted.
         TestHttpClient client = createTestClient();
         client.status = 503;
         A2ACardResolver resolver = A2ACardResolver.builder().httpClient(client).baseUrl("http://example.com").build();
         A2AClientHTTPError error = assertThrows(A2AClientHTTPError.class, resolver::getAgentCard);
         assertEquals(503, error.getCode());
-        assertEquals(2, client.urlsCalled.size());
+        assertEquals(1, client.urlsCalled.size());
     }
 
     @Test
