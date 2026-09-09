@@ -6,6 +6,7 @@ import static org.a2aproject.sdk.extras.opentelemetry.A2AObservabilityNames.EXTR
 import static org.a2aproject.sdk.extras.opentelemetry.A2AObservabilityNames.GENAI_REQUEST;
 import static org.a2aproject.sdk.extras.opentelemetry.A2AObservabilityNames.GENAI_RESPONSE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -20,8 +21,10 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanBuilder;
+import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
@@ -57,6 +60,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -74,6 +78,9 @@ class OpenTelemetryRequestHandlerDecoratorTest {
 
     @Mock
     private Scope scope;
+
+    @Mock
+    private SpanContext spanContext;
 
     @Mock
     private ServerCallContext context;
@@ -94,8 +101,10 @@ class OpenTelemetryRequestHandlerDecoratorTest {
         lenient().when(spanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(spanBuilder);
         lenient().when(spanBuilder.setAttribute(anyString(), anyString())).thenReturn(spanBuilder);
         lenient().when(spanBuilder.setAttribute(anyString(), anyLong())).thenReturn(spanBuilder);
+        lenient().when(spanBuilder.addLink(any(SpanContext.class))).thenReturn(spanBuilder);
         lenient().when(spanBuilder.startSpan()).thenReturn(span);
         lenient().when(span.makeCurrent()).thenReturn(scope);
+        lenient().when(span.getSpanContext()).thenReturn(spanContext);
         lenient().when(span.setAttribute(anyString(), anyString())).thenReturn(span);
         lenient().when(span.setStatus(any(StatusCode.class))).thenReturn(span);
         lenient().when(span.setStatus(any(StatusCode.class), anyString())).thenReturn(span);
@@ -279,7 +288,7 @@ class OpenTelemetryRequestHandlerDecoratorTest {
     @Nested
     class MessageSendStreamTests {
         @Test
-        void onMessageSendStream_createsSpanWithSpecialMessage() throws A2AError {
+        void onMessageSendStream_createsSpanAndWrapsPublisher() throws A2AError {
             Message message = Message.builder()
                     .role(Message.Role.ROLE_USER)
                     .parts(List.of(new TextPart("test message")))
@@ -293,11 +302,12 @@ class OpenTelemetryRequestHandlerDecoratorTest {
 
             Flow.Publisher<StreamingEventKind> actualResult = decorator.onMessageSendStream(params, context);
 
-            assertEquals(publisher, actualResult);
+            assertNotNull(actualResult);
             verify(tracer).spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD);
             verify(spanBuilder).setAttribute(GENAI_REQUEST, params.toString());
             verify(span).setAttribute(GENAI_RESPONSE, "Stream publisher created");
             verify(span).setStatus(StatusCode.OK);
+            verify(span).end();
         }
 
         @Test
@@ -318,6 +328,137 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(span).setAttribute(ERROR_TYPE, error.getMessage());
             verify(span).setStatus(StatusCode.ERROR, error.getMessage());
             verify(span).end();
+        }
+
+        @Test
+        @SuppressWarnings("unchecked")
+        void onMessageSendStream_closingSpan_createdOnComplete() throws A2AError {
+            Message message = Message.builder()
+                    .role(Message.Role.ROLE_USER)
+                    .parts(List.of(new TextPart("test message")))
+                    .messageId("msg-123")
+                    .build();
+            MessageSendParams params = new MessageSendParams(message, null, null, "");
+            Flow.Publisher<StreamingEventKind> publisher = mock(Flow.Publisher.class);
+            when(delegate.onMessageSendStream(params, context)).thenReturn(publisher);
+
+            SpanBuilder closingSpanBuilder = mock(SpanBuilder.class);
+            Span closingSpan = mock(Span.class);
+            when(tracer.spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-end")).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.addLink(any(SpanContext.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.startSpan()).thenReturn(closingSpan);
+
+            Flow.Publisher<StreamingEventKind> result = decorator.onMessageSendStream(params, context);
+
+            Flow.Subscriber<StreamingEventKind> testSubscriber = mock(Flow.Subscriber.class);
+            result.subscribe(testSubscriber);
+
+            ArgumentCaptor<Flow.Subscriber> subscriberCaptor = ArgumentCaptor.forClass(Flow.Subscriber.class);
+            verify(publisher).subscribe(subscriberCaptor.capture());
+            Flow.Subscriber<StreamingEventKind> otelSubscriber = (Flow.Subscriber<StreamingEventKind>) subscriberCaptor.getValue();
+
+            otelSubscriber.onComplete();
+
+            verify(tracer).spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-end");
+            verify(closingSpanBuilder).addLink(spanContext);
+            verify(closingSpan).setStatus(StatusCode.OK);
+            verify(closingSpan).end();
+            verify(testSubscriber).onComplete();
+        }
+
+        @Test
+        @SuppressWarnings("unchecked")
+        void onMessageSendStream_closingSpan_recordsEventsAndEndsOnError() throws A2AError {
+            Message message = Message.builder()
+                    .role(Message.Role.ROLE_USER)
+                    .parts(List.of(new TextPart("test message")))
+                    .messageId("msg-123")
+                    .build();
+            MessageSendParams params = new MessageSendParams(message, null, null, "");
+            Flow.Publisher<StreamingEventKind> publisher = mock(Flow.Publisher.class);
+            when(delegate.onMessageSendStream(params, context)).thenReturn(publisher);
+            StreamingEventKind eventItem = Message.builder()
+                    .role(Message.Role.ROLE_AGENT)
+                    .parts(List.of(new TextPart("event-data")))
+                    .messageId("event-msg-1")
+                    .build();
+
+            SpanBuilder closingSpanBuilder = mock(SpanBuilder.class);
+            Span closingSpan = mock(Span.class);
+            when(tracer.spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-end")).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.addLink(any(SpanContext.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.startSpan()).thenReturn(closingSpan);
+
+            Flow.Publisher<StreamingEventKind> result = decorator.onMessageSendStream(params, context);
+
+            Flow.Subscriber<StreamingEventKind> testSubscriber = mock(Flow.Subscriber.class);
+            result.subscribe(testSubscriber);
+
+            ArgumentCaptor<Flow.Subscriber> subscriberCaptor = ArgumentCaptor.forClass(Flow.Subscriber.class);
+            verify(publisher).subscribe(subscriberCaptor.capture());
+            Flow.Subscriber<StreamingEventKind> otelSubscriber = (Flow.Subscriber<StreamingEventKind>) subscriberCaptor.getValue();
+
+            otelSubscriber.onNext(eventItem);
+            Throwable error = new RuntimeException("stream failure");
+            otelSubscriber.onError(error);
+
+            verify(testSubscriber).onNext(eventItem);
+            verify(closingSpan).addEvent(eq(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event"), any(Attributes.class));
+            verify(closingSpan).setStatus(StatusCode.ERROR, "stream failure");
+            verify(closingSpan).end();
+            verify(testSubscriber).onError(error);
+        }
+
+        @Test
+        @SuppressWarnings("unchecked")
+        void onMessageSendStream_closingSpan_recordsMultipleEventsOnComplete() throws A2AError {
+            Message message = Message.builder()
+                    .role(Message.Role.ROLE_USER)
+                    .parts(List.of(new TextPart("test message")))
+                    .messageId("msg-123")
+                    .build();
+            MessageSendParams params = new MessageSendParams(message, null, null, "");
+            Flow.Publisher<StreamingEventKind> publisher = mock(Flow.Publisher.class);
+            when(delegate.onMessageSendStream(params, context)).thenReturn(publisher);
+            StreamingEventKind event1 = Message.builder()
+                    .role(Message.Role.ROLE_AGENT)
+                    .parts(List.of(new TextPart("first event")))
+                    .messageId("event-1")
+                    .build();
+            StreamingEventKind event2 = Message.builder()
+                    .role(Message.Role.ROLE_AGENT)
+                    .parts(List.of(new TextPart("second event")))
+                    .messageId("event-2")
+                    .build();
+
+            SpanBuilder closingSpanBuilder = mock(SpanBuilder.class);
+            Span closingSpan = mock(Span.class);
+            when(tracer.spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-end")).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.addLink(any(SpanContext.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.startSpan()).thenReturn(closingSpan);
+
+            Flow.Publisher<StreamingEventKind> result = decorator.onMessageSendStream(params, context);
+
+            Flow.Subscriber<StreamingEventKind> testSubscriber = mock(Flow.Subscriber.class);
+            result.subscribe(testSubscriber);
+
+            ArgumentCaptor<Flow.Subscriber> subscriberCaptor = ArgumentCaptor.forClass(Flow.Subscriber.class);
+            verify(publisher).subscribe(subscriberCaptor.capture());
+            Flow.Subscriber<StreamingEventKind> otelSubscriber = (Flow.Subscriber<StreamingEventKind>) subscriberCaptor.getValue();
+
+            otelSubscriber.onNext(event1);
+            otelSubscriber.onNext(event2);
+            otelSubscriber.onComplete();
+
+            verify(testSubscriber).onNext(event1);
+            verify(testSubscriber).onNext(event2);
+            verify(closingSpan, times(2)).addEvent(eq(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event"), any(Attributes.class));
+            verify(closingSpan).setStatus(StatusCode.OK);
+            verify(closingSpan).end();
+            verify(testSubscriber).onComplete();
         }
     }
 
@@ -392,18 +533,19 @@ class OpenTelemetryRequestHandlerDecoratorTest {
     @Nested
     class ResubscribeToTaskTests {
         @Test
-        void onResubscribeToTask_createsSpanWithSpecialMessage() throws A2AError {
+        void onResubscribeToTask_createsSpanAndWrapsPublisher() throws A2AError {
             TaskIdParams params = new TaskIdParams("task-123");
             Flow.Publisher<StreamingEventKind> publisher = mock(Flow.Publisher.class);
             when(delegate.onSubscribeToTask(params, context)).thenReturn(publisher);
 
             Flow.Publisher<StreamingEventKind> actualResult = decorator.onSubscribeToTask(params, context);
 
-            assertEquals(publisher, actualResult);
+            assertNotNull(actualResult);
             verify(tracer).spanBuilder(A2AMethods.SUBSCRIBE_TO_TASK_METHOD);
             verify(spanBuilder).setAttribute(GENAI_REQUEST, params.toString());
             verify(span).setAttribute(GENAI_RESPONSE, "Stream publisher created");
             verify(span).setStatus(StatusCode.OK);
+            verify(span).end();
         }
 
         @Test
@@ -417,6 +559,77 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(span).setAttribute(ERROR_TYPE, error.getMessage());
             verify(span).setStatus(StatusCode.ERROR, error.getMessage());
             verify(span).end();
+        }
+
+        @Test
+        @SuppressWarnings("unchecked")
+        void onResubscribeToTask_closingSpan_createdOnComplete() throws A2AError {
+            TaskIdParams params = new TaskIdParams("task-123");
+            Flow.Publisher<StreamingEventKind> publisher = mock(Flow.Publisher.class);
+            when(delegate.onSubscribeToTask(params, context)).thenReturn(publisher);
+
+            SpanBuilder closingSpanBuilder = mock(SpanBuilder.class);
+            Span closingSpan = mock(Span.class);
+            when(tracer.spanBuilder(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-end")).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.addLink(any(SpanContext.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.startSpan()).thenReturn(closingSpan);
+
+            Flow.Publisher<StreamingEventKind> result = decorator.onSubscribeToTask(params, context);
+
+            Flow.Subscriber<StreamingEventKind> testSubscriber = mock(Flow.Subscriber.class);
+            result.subscribe(testSubscriber);
+
+            ArgumentCaptor<Flow.Subscriber> subscriberCaptor = ArgumentCaptor.forClass(Flow.Subscriber.class);
+            verify(publisher).subscribe(subscriberCaptor.capture());
+            Flow.Subscriber<StreamingEventKind> otelSubscriber = (Flow.Subscriber<StreamingEventKind>) subscriberCaptor.getValue();
+
+            otelSubscriber.onComplete();
+
+            verify(tracer).spanBuilder(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-end");
+            verify(closingSpanBuilder).addLink(spanContext);
+            verify(closingSpan).setStatus(StatusCode.OK);
+            verify(closingSpan).end();
+            verify(testSubscriber).onComplete();
+        }
+
+        @Test
+        @SuppressWarnings("unchecked")
+        void onResubscribeToTask_closingSpan_recordsEventsOnCompleteAndError() throws A2AError {
+            TaskIdParams params = new TaskIdParams("task-123");
+            Flow.Publisher<StreamingEventKind> publisher = mock(Flow.Publisher.class);
+            when(delegate.onSubscribeToTask(params, context)).thenReturn(publisher);
+            StreamingEventKind eventItem = Message.builder()
+                    .role(Message.Role.ROLE_AGENT)
+                    .parts(List.of(new TextPart("streamed-event")))
+                    .messageId("evt-1")
+                    .build();
+
+            SpanBuilder closingSpanBuilder = mock(SpanBuilder.class);
+            Span closingSpan = mock(Span.class);
+            when(tracer.spanBuilder(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-end")).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.addLink(any(SpanContext.class))).thenReturn(closingSpanBuilder);
+            when(closingSpanBuilder.startSpan()).thenReturn(closingSpan);
+
+            Flow.Publisher<StreamingEventKind> result = decorator.onSubscribeToTask(params, context);
+
+            Flow.Subscriber<StreamingEventKind> testSubscriber = mock(Flow.Subscriber.class);
+            result.subscribe(testSubscriber);
+
+            ArgumentCaptor<Flow.Subscriber> subscriberCaptor = ArgumentCaptor.forClass(Flow.Subscriber.class);
+            verify(publisher).subscribe(subscriberCaptor.capture());
+            Flow.Subscriber<StreamingEventKind> otelSubscriber = (Flow.Subscriber<StreamingEventKind>) subscriberCaptor.getValue();
+
+            otelSubscriber.onNext(eventItem);
+            Throwable error = new RuntimeException("subscribe failure");
+            otelSubscriber.onError(error);
+
+            verify(testSubscriber).onNext(eventItem);
+            verify(closingSpan).addEvent(eq(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-event"), any(Attributes.class));
+            verify(closingSpan).setStatus(StatusCode.ERROR, "subscribe failure");
+            verify(closingSpan).end();
+            verify(testSubscriber).onError(error);
         }
     }
 

@@ -228,6 +228,21 @@ public class A2ATestRoutes {
             spanData.getResource().getAttributes().forEach((k, v) -> {
                 jsonObject.addProperty("resource_" + k.getKey(), v.toString());
             });
+
+            jsonObject.addProperty("events_count", spanData.getEvents().size());
+            spanData.getEvents().forEach(event -> {
+                JsonObject eventObject = new JsonObject();
+                eventObject.addProperty("name", event.getName());
+                event.getAttributes().forEach((k, v) -> eventObject.addProperty("attr_" + k.getKey(), v.toString()));
+                jsonObject.add("event_" + event.getName(), eventObject);
+            });
+
+            jsonObject.addProperty("links_count", spanData.getLinks().size());
+            if (!spanData.getLinks().isEmpty()) {
+                jsonObject.addProperty("link_0_spanId", spanData.getLinks().get(0).getSpanContext().getSpanId());
+                jsonObject.addProperty("link_0_traceId", spanData.getLinks().get(0).getSpanContext().getTraceId());
+            }
+
             spans.add(jsonObject);
         }
 

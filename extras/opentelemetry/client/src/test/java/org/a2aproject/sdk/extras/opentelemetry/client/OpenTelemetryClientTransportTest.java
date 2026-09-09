@@ -364,14 +364,6 @@ class OpenTelemetryClientTransportTest {
         MessageSendParams request = mock(MessageSendParams.class);
         when(request.toString()).thenReturn("request-string");
 
-        SpanBuilder eventSpanBuilder = mock(SpanBuilder.class);
-        Span eventSpan = mock(Span.class);
-        when(tracer.spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event")).thenReturn(eventSpanBuilder);
-        when(eventSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(eventSpanBuilder);
-        when(eventSpanBuilder.setAttribute(anyString(), anyString())).thenReturn(eventSpanBuilder);
-        when(eventSpanBuilder.addLink(any(SpanContext.class))).thenReturn(eventSpanBuilder);
-        when(eventSpanBuilder.startSpan()).thenReturn(eventSpan);
-
         ArgumentCaptor<Consumer<StreamingEventKind>> eventConsumerCaptor = ArgumentCaptor.forClass(Consumer.class);
         Consumer<StreamingEventKind> originalConsumer = mock(Consumer.class);
 
@@ -388,9 +380,7 @@ class OpenTelemetryClientTransportTest {
 
         eventConsumerCaptor.getValue().accept(event);
 
-        verify(tracer).spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event");
-        verify(eventSpan).setStatus(StatusCode.OK);
-        verify(eventSpan).end();
+        verify(span).addEvent(eq(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event"), any(io.opentelemetry.api.common.Attributes.class));
         verify(originalConsumer).accept(event);
     }
 
@@ -398,13 +388,6 @@ class OpenTelemetryClientTransportTest {
     void testErrorConsumer_ThroughSendMessageStreaming() throws A2AClientException {
         MessageSendParams request = mock(MessageSendParams.class);
         when(request.toString()).thenReturn("request-string");
-
-        SpanBuilder errorSpanBuilder = mock(SpanBuilder.class);
-        Span errorSpan = mock(Span.class);
-        when(tracer.spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-error")).thenReturn(errorSpanBuilder);
-        when(errorSpanBuilder.setSpanKind(any(SpanKind.class))).thenReturn(errorSpanBuilder);
-        when(errorSpanBuilder.addLink(any(SpanContext.class))).thenReturn(errorSpanBuilder);
-        when(errorSpanBuilder.startSpan()).thenReturn(errorSpan);
 
         ArgumentCaptor<Consumer<Throwable>> errorConsumerCaptor = ArgumentCaptor.forClass(Consumer.class);
         Consumer<Throwable> originalConsumer = mock(Consumer.class);
@@ -417,9 +400,7 @@ class OpenTelemetryClientTransportTest {
 
         errorConsumerCaptor.getValue().accept(error);
 
-        verify(tracer).spanBuilder(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-error");
-        verify(errorSpan).setStatus(StatusCode.ERROR, "Test error");
-        verify(errorSpan).end();
+        verify(span).addEvent(eq(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-error"), any(io.opentelemetry.api.common.Attributes.class));
         verify(originalConsumer).accept(error);
     }
 

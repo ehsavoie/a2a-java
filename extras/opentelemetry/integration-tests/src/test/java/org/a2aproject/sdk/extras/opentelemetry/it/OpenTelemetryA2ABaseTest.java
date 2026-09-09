@@ -235,6 +235,55 @@ abstract class OpenTelemetryA2ABaseTest extends BaseTest {
         }
     }
 
+    @Test
+    void testSendMessageStreamCreatesClosingSpan() throws Exception {
+        reset();
+
+        Client streamingClient = Client.builder(A2A.getAgentCard("http://localhost:" + serverPort))
+                .clientConfig(new ClientConfig.Builder().setStreaming(true).build())
+                .withTransport(JSONRPCTransport.class, new JSONRPCTransportConfigBuilder())
+                .build();
+
+        Message message = Message.builder()
+                .role(Message.Role.ROLE_USER)
+                .parts(List.of(new TextPart("stream test")))
+                .messageId("stream-msg-1")
+                .build();
+        MessageSendParams params = new MessageSendParams(message, null, null, "");
+
+        streamingClient.sendMessage(params, List.of(), null, null);
+
+        await().atMost(10, SECONDS).until(() -> {
+            List<Map<String, Object>> spans = getSpans();
+            return spans.stream().anyMatch(s -> (A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-end").equals(s.get("name")));
+        });
+
+        List<Map<String, Object>> spans = getSpans();
+
+        Map<String, Object> initialSpan = spans.stream()
+                .filter(s -> A2AMethods.SEND_STREAMING_MESSAGE_METHOD.equals(s.get("name")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No initial SendStreamingMessage span found"));
+
+        Map<String, Object> closingSpan = spans.stream()
+                .filter(s -> (A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-end").equals(s.get("name")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No SendStreamingMessage-stream closing span found"));
+
+        assertEquals(Boolean.TRUE, initialSpan.get("ended"), "Initial span should be ended");
+        assertEquals("SERVER", initialSpan.get("kind"), "Initial span should be SERVER");
+
+        assertEquals(Boolean.TRUE, closingSpan.get("ended"), "Closing span should be ended");
+        assertEquals("SERVER", closingSpan.get("kind"), "Closing span should be SERVER");
+
+        assertTrue(((Number) closingSpan.get("events_count")).intValue() > 0,
+                "Closing span should have at least one streaming event");
+        assertEquals(1, ((Number) closingSpan.get("links_count")).intValue(),
+                "Closing span should have exactly one link");
+        assertEquals(initialSpan.get("spanId"), closingSpan.get("link_0_spanId"),
+                "Closing span should link to the initial span");
+    }
+
     protected void saveTaskInTaskStore(Task task) throws Exception {
         HttpClient httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)

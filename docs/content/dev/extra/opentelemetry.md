@@ -65,6 +65,56 @@ Async agent execution (maintains trace context)
 Response (with trace headers)
 ```
 
+### Streaming Span Lifecycle
+
+Streaming methods (`message/stream` and `tasks/resubscribe`) follow a two-span model to correctly represent the full duration of a streaming response.
+
+**Span 1 — method span** is created when the request arrives and ended as soon as the publisher is returned to the transport layer. It captures request attributes and the initial outcome (success or synchronous error).
+
+**Span 2 — end span** (`<method>-end`) is created when the stream terminates — either on completion or error. It carries a [link](https://opentelemetry.io/docs/concepts/signals/traces/#span-links) to Span 1 for correlation, and records every A2A event that was published as a [span event](https://opentelemetry.io/docs/concepts/signals/traces/#span-events).
+
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant D as OTel Decorator
+    participant H as RequestHandler
+    participant W as WrappedPublisher
+
+    C->>D: onMessageSendStream(params)
+    D->>D: create Span₁ (SERVER)
+    D->>H: onMessageSendStream(params)
+    H-->>D: publisher
+    D->>D: capture Span₁.context
+    D->>D: Span₁.setStatus(OK) · Span₁.end()
+    D-->>C: WrappedPublisher
+
+    note over D: Span₁ closed immediately
+
+    loop for each streaming event
+        W-->>C: onNext(event)
+        W->>W: collect PendingEvent(name, attributes)
+    end
+
+    alt stream completes normally
+        W->>W: create Span₂ (SERVER, link→Span₁)
+        W->>W: addEvent per PendingEvent
+        W->>W: Span₂.setStatus(OK) · Span₂.end()
+        W-->>C: onComplete()
+    else stream errors
+        W->>W: create Span₂ (SERVER, link→Span₁)
+        W->>W: addEvent per PendingEvent
+        W->>W: Span₂.setStatus(ERROR) · Span₂.end()
+        W-->>C: onError(throwable)
+    end
+</pre>
+
+Each span event on Span₂ carries:
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.agent.a2a.streaming-event` | `toString()` of the published `StreamingEventKind` |
+| `gen_ai.agent.a2a.status.code` | `OK` |
+
 ### Context-Aware Async Executor
 
 > **Note:** The `AsyncManagedExecutorProducer` is provided by the **Quarkus reference server** ([`reference/common`](https://github.com/a2aproject/a2a-java/blob/main/reference/common/src/main/java/org/a2aproject/sdk/server/common/quarkus/AsyncManagedExecutorProducer.java)), not the OpenTelemetry module. It is documented here because it enables context propagation (including trace context) across async boundaries.

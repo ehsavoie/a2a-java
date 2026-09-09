@@ -13,6 +13,8 @@ import static org.a2aproject.sdk.extras.opentelemetry.A2AObservabilityNames.GENA
 import static org.a2aproject.sdk.extras.opentelemetry.A2AObservabilityNames.GENAI_ROLE;
 import static org.a2aproject.sdk.extras.opentelemetry.A2AObservabilityNames.GENAI_TASK_ID;
 
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributesBuilder;
 import org.a2aproject.sdk.client.transport.spi.ClientTransport;
 import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallContext;
 import org.a2aproject.sdk.jsonrpc.common.wrappers.ListTasksResult;
@@ -35,7 +37,6 @@ import org.a2aproject.sdk.spec.TaskPushNotificationConfig;
 import org.a2aproject.sdk.spec.TaskQueryParams;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanBuilder;
-import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
@@ -139,8 +140,8 @@ public class OpenTelemetryClientTransport implements ClientTransport {
         try (Scope scope = span.makeCurrent()) {
             delegate.sendMessageStreaming(
                     request,
-                    new OpenTelemetryEventConsumer(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event", eventConsumer, tracer, span.getSpanContext()),
-                    new OpenTelemetryErrorConsumer(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-error", errorConsumer, tracer, span.getSpanContext()),
+                    new OpenTelemetryEventConsumer(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-event", eventConsumer, span),
+                    new OpenTelemetryErrorConsumer(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-error", errorConsumer, span),
                     clientContext
             );
             span.setStatus(StatusCode.OK);
@@ -381,8 +382,8 @@ public class OpenTelemetryClientTransport implements ClientTransport {
         try (Scope scope = span.makeCurrent()) {
             delegate.subscribeToTask(
                     request,
-                    new OpenTelemetryEventConsumer(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-event", eventConsumer, tracer, span.getSpanContext()),
-                    new OpenTelemetryErrorConsumer(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-error", errorConsumer, tracer, span.getSpanContext()),
+                    new OpenTelemetryEventConsumer(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-event", eventConsumer, span),
+                    new OpenTelemetryErrorConsumer(A2AMethods.SUBSCRIBE_TO_TASK_METHOD + "-error", errorConsumer, span),
                     clientContext
             );
             span.setStatus(StatusCode.OK);
@@ -432,29 +433,24 @@ public class OpenTelemetryClientTransport implements ClientTransport {
     private static class OpenTelemetryEventConsumer implements Consumer<StreamingEventKind> {
 
         private final Consumer<StreamingEventKind> delegate;
-        private final Tracer tracer;
-        private final SpanContext context;
+        private final Span span;
         private final String name;
 
-        public OpenTelemetryEventConsumer(String name, Consumer<StreamingEventKind> delegate, Tracer tracer, SpanContext context) {
+        public OpenTelemetryEventConsumer(String name, Consumer<StreamingEventKind> delegate, Span span) {
             this.delegate = delegate;
-            this.tracer = tracer;
-            this.context = context;
+            this.span = span;
             this.name = name;
         }
 
         @Override
         public void accept(StreamingEventKind t) {
-            SpanBuilder spanBuilder = tracer.spanBuilder(name)
-                    .setSpanKind(SpanKind.CLIENT);
-            spanBuilder.setAttribute("gen_ai.agent.a2a.streaming-event", t.toString());
-            spanBuilder.addLink(context);
-            Span span = spanBuilder.startSpan();
+            AttributesBuilder builder = Attributes.builder();
+            builder.put("gen_ai.agent.a2a.streaming-event", t.toString());
             try {
                 delegate.accept(t);
-                span.setStatus(StatusCode.OK);
+                builder.put("gen_ai.agent.a2a.status.code", StatusCode.OK.name());
             } finally {
-                span.end();
+                span.addEvent(name, builder.build());
             }
         }
     }
@@ -462,14 +458,12 @@ public class OpenTelemetryClientTransport implements ClientTransport {
     private static class OpenTelemetryErrorConsumer implements Consumer<Throwable> {
 
         private final Consumer<Throwable> delegate;
-        private final Tracer tracer;
-        private final SpanContext context;
+        private final Span span;
         private final String name;
 
-        public OpenTelemetryErrorConsumer(String name, Consumer<java.lang.Throwable> delegate, Tracer tracer, SpanContext context) {
+        public OpenTelemetryErrorConsumer(String name, Consumer<Throwable> delegate, Span span) {
             this.delegate = delegate;
-            this.tracer = tracer;
-            this.context = context;
+            this.span = span;
             this.name = name;
         }
 
@@ -478,15 +472,14 @@ public class OpenTelemetryClientTransport implements ClientTransport {
             if (t == null) {
                 return;
             }
-            SpanBuilder spanBuilder = tracer.spanBuilder(name)
-                    .setSpanKind(SpanKind.CLIENT);
-            spanBuilder.addLink(context);
-            Span span = spanBuilder.startSpan();
+            AttributesBuilder builder = Attributes.builder();
+            builder.put("gen_ai.agent.a2a.streaming-event", t.toString());
             try {
-                span.setStatus(StatusCode.ERROR, t.getMessage());
+                builder.put("gen_ai.agent.a2a.status.code", StatusCode.ERROR.name());
+                builder.put("gen_ai.agent.a2a.status.description", t.getMessage());
                 delegate.accept(t);
             } finally {
-                span.end();
+                span.addEvent(name, builder.build());
             }
         }
     }

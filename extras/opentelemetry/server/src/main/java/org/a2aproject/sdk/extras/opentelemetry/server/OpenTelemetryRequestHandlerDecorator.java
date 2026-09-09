@@ -33,7 +33,9 @@ import org.a2aproject.sdk.spec.Task;
 import org.a2aproject.sdk.spec.TaskIdParams;
 import org.a2aproject.sdk.spec.TaskPushNotificationConfig;
 import org.a2aproject.sdk.spec.TaskQueryParams;
+import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
@@ -43,6 +45,8 @@ import jakarta.decorator.Decorator;
 import jakarta.decorator.Delegate;
 import jakarta.enterprise.inject.Any;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Flow;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -282,7 +286,8 @@ public abstract class OpenTelemetryRequestHandlerDecorator implements RequestHan
             }
 
             span.setStatus(StatusCode.OK);
-            return result;
+            SpanContext spanContext = span.getSpanContext();
+            return new OpenTelemetryStreamPublisher(result, tracer, A2AMethods.SEND_STREAMING_MESSAGE_METHOD, spanContext);
         } catch (A2AError error) {
             span.setAttribute(ERROR_TYPE, error.getMessage());
             span.setStatus(StatusCode.ERROR, error.getMessage());
@@ -387,7 +392,8 @@ public abstract class OpenTelemetryRequestHandlerDecorator implements RequestHan
             }
 
             span.setStatus(StatusCode.OK);
-            return result;
+            SpanContext spanContext = span.getSpanContext();
+            return new OpenTelemetryStreamPublisher(result, tracer, A2AMethods.SUBSCRIBE_TO_TASK_METHOD, spanContext);
         } catch (A2AError error) {
             span.setAttribute(ERROR_TYPE, error.getMessage());
             span.setStatus(StatusCode.ERROR, error.getMessage());
@@ -470,5 +476,94 @@ public abstract class OpenTelemetryRequestHandlerDecorator implements RequestHan
 
     private boolean extractResponse() {
         return Boolean.getBoolean(EXTRACT_RESPONSE_SYS_PROPERTY);
+    }
+
+    private static class OpenTelemetryStreamPublisher implements Flow.Publisher<StreamingEventKind> {
+
+        private final Flow.Publisher<StreamingEventKind> delegate;
+        private final Tracer tracer;
+        private final String spanName;
+        private final SpanContext parentSpanContext;
+
+        OpenTelemetryStreamPublisher(Flow.Publisher<StreamingEventKind> delegate, Tracer tracer,
+                String spanName, SpanContext parentSpanContext) {
+            this.delegate = delegate;
+            this.tracer = tracer;
+            this.spanName = spanName;
+            this.parentSpanContext = parentSpanContext;
+        }
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super StreamingEventKind> subscriber) {
+            delegate.subscribe(new OpenTelemetryStreamSubscriber(subscriber, tracer, spanName, parentSpanContext));
+        }
+    }
+
+    private static class OpenTelemetryStreamSubscriber implements Flow.Subscriber<StreamingEventKind> {
+
+        private final Flow.Subscriber<? super StreamingEventKind> delegate;
+        private final Tracer tracer;
+        private final String spanName;
+        private final SpanContext parentSpanContext;
+        private final List<PendingEvent> pendingEvents = new ArrayList<>();
+
+        OpenTelemetryStreamSubscriber(Flow.Subscriber<? super StreamingEventKind> delegate, Tracer tracer,
+                String spanName, SpanContext parentSpanContext) {
+            this.delegate = delegate;
+            this.tracer = tracer;
+            this.spanName = spanName;
+            this.parentSpanContext = parentSpanContext;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            delegate.onSubscribe(subscription);
+        }
+
+        @Override
+        public void onNext(StreamingEventKind item) {
+            pendingEvents.add(new PendingEvent(spanName + "-event",
+                    Attributes.builder()
+                            .put("gen_ai.agent.a2a.streaming-event", item.toString())
+                            .put("gen_ai.agent.a2a.status.code", StatusCode.OK.name())
+                            .build()));
+            delegate.onNext(item);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            Span closingSpan = tracer.spanBuilder(spanName + "-end")
+                    .setSpanKind(SpanKind.SERVER)
+                    .addLink(parentSpanContext)
+                    .startSpan();
+            try {
+                for (PendingEvent event : pendingEvents) {
+                    closingSpan.addEvent(event.name(), event.attributes());
+                }
+                closingSpan.setStatus(StatusCode.ERROR, throwable.getMessage());
+            } finally {
+                closingSpan.end();
+                delegate.onError(throwable);
+            }
+        }
+
+        @Override
+        public void onComplete() {
+            Span closingSpan = tracer.spanBuilder(spanName + "-end")
+                    .setSpanKind(SpanKind.SERVER)
+                    .addLink(parentSpanContext)
+                    .startSpan();
+            try {
+                for (PendingEvent event : pendingEvents) {
+                    closingSpan.addEvent(event.name(), event.attributes());
+                }
+                closingSpan.setStatus(StatusCode.OK);
+            } finally {
+                closingSpan.end();
+                delegate.onComplete();
+            }
+        }
+
+        private record PendingEvent(String name, Attributes attributes) {}
     }
 }
