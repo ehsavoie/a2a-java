@@ -283,7 +283,7 @@ public class A2ATestRoutes {
             sdk.getSdkMeterProvider().forceFlush();
         }
         List<MetricData> metrics = inMemoryMetricExporter.getFinishedMetricItems().stream()
-                .filter(m -> !m.getName().contains("export") && !m.getName().contains("reset"))
+                .filter(m -> m.getName().startsWith("gen_ai."))
                 .collect(Collectors.toList());
         rc.response()
                 .setStatusCode(200)
@@ -291,7 +291,7 @@ public class A2ATestRoutes {
                 .end(gson.toJson(serializeMetrics(metrics)));
     }
 
-    private JsonElement serializeMetrics(List<MetricData> metricDataList) {
+    JsonElement serializeMetrics(List<MetricData> metricDataList) {
         JsonArray result = new JsonArray(metricDataList.size());
         for (MetricData m : metricDataList) {
             JsonObject obj = new JsonObject();
@@ -302,13 +302,15 @@ public class A2ATestRoutes {
             if (m.getType() == MetricDataType.HISTOGRAM) {
                 HistogramData histogram = m.getHistogramData();
                 obj.addProperty("data_count", histogram.getPoints().size());
+                JsonArray points = new JsonArray(histogram.getPoints().size());
                 histogram.getPoints().forEach(point -> {
                     JsonObject pointObj = new JsonObject();
                     pointObj.addProperty("count", point.getCount());
                     pointObj.addProperty("sum", point.getSum());
                     point.getAttributes().forEach((k, v) -> pointObj.addProperty("attr_" + k.getKey(), v.toString()));
-                    obj.add("point", pointObj);
+                    points.add(pointObj);
                 });
+                obj.add("points", points);
             }
             result.add(obj);
         }

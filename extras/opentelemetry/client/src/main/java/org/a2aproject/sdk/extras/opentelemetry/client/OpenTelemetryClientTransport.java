@@ -550,10 +550,9 @@ public class OpenTelemetryClientTransport implements ClientTransport {
                 return;
             }
             AttributesBuilder builder = Attributes.builder();
-            builder.put("gen_ai.agent.a2a.streaming-event", t.toString());
+            builder.put("gen_ai.agent.a2a.status.code", StatusCode.ERROR.name());
+            builder.put("gen_ai.agent.a2a.status.description", t.getMessage());
             try {
-                builder.put("gen_ai.agent.a2a.status.code", StatusCode.ERROR.name());
-                builder.put("gen_ai.agent.a2a.status.description", t.getMessage());
                 delegate.accept(t);
             } finally {
                 span.addEvent(name, builder.build());

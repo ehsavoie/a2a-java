@@ -25,6 +25,8 @@ import org.a2aproject.sdk.spec.Task;
 import org.a2aproject.sdk.spec.TaskIdParams;
 import org.a2aproject.sdk.spec.TaskPushNotificationConfig;
 import org.a2aproject.sdk.spec.TaskQueryParams;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.DoubleHistogramBuilder;
 import io.opentelemetry.api.metrics.Meter;
@@ -505,6 +507,31 @@ class OpenTelemetryClientTransportTest {
 
             verify(histogram, never()).record(anyDouble(), any(io.opentelemetry.api.common.Attributes.class));
         }
+    }
+
+    @Test
+    void testErrorConsumer_emitsStatusAttributesWithoutStreamingEventAttribute() throws A2AClientException {
+        MessageSendParams request = mock(MessageSendParams.class);
+        when(request.toString()).thenReturn("request-string");
+        Consumer<Throwable> originalConsumer = mock(Consumer.class);
+
+        transport.sendMessageStreaming(request, mock(Consumer.class), originalConsumer, context);
+
+        ArgumentCaptor<Consumer<Throwable>> errorConsumerCaptor = ArgumentCaptor.forClass(Consumer.class);
+        verify(delegate).sendMessageStreaming(eq(request), any(Consumer.class),
+                errorConsumerCaptor.capture(), any(ClientCallContext.class));
+
+        RuntimeException error = new RuntimeException("stream broke");
+        errorConsumerCaptor.getValue().accept(error);
+
+        ArgumentCaptor<Attributes> attrsCaptor = ArgumentCaptor.forClass(Attributes.class);
+        verify(span).addEvent(eq(A2AMethods.SEND_STREAMING_MESSAGE_METHOD + "-error"), attrsCaptor.capture());
+
+        Attributes attrs = attrsCaptor.getValue();
+        assertEquals(StatusCode.ERROR.name(), attrs.get(AttributeKey.stringKey("gen_ai.agent.a2a.status.code")));
+        assertEquals("stream broke", attrs.get(AttributeKey.stringKey("gen_ai.agent.a2a.status.description")));
+        assertNull(attrs.get(AttributeKey.stringKey("gen_ai.agent.a2a.streaming-event")),
+                "streaming-event must not be set on an error span event");
     }
 
     @Test
