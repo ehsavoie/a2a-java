@@ -175,6 +175,19 @@ The following attributes are automatically added to spans (defined in `A2AObserv
 | `gen_ai.agent.a2a.response` | Full response data (only if extraction enabled) |
 | `error.type` | Error message (on failures) |
 
+### Push Notification Delivery Tracing
+
+When the server delivers a push notification to a client webhook, `OpenTelemetryPushNotificationSenderDecorator` creates a `CLIENT` span named `SendPushNotification`. This span is independent of the original request span but carries the `gen_ai.agent.a2a.task_id` attribute, allowing correlation by task ID in your observability tool.
+
+| Attribute | Description |
+|-----------|-------------|
+| `gen_ai.agent.a2a.operation.name` | `SendPushNotification` |
+| `gen_ai.agent.a2a.task_id` | Task identifier |
+| `gen_ai.agent.a2a.context_id` | Context identifier (when available) |
+| `gen_ai.agent.a2a.push_notification.event_kind` | The type of streaming event delivered (e.g. `TaskStatusUpdateEvent`) |
+| `gen_ai.agent.a2a.response` | Full event payload (only if extraction enabled) |
+| `error.type` | Error message (on delivery failure) |
+
 ### Request/Response Extraction
 
 Enable request and response data extraction in spans using JVM system properties:

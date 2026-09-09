@@ -320,6 +320,59 @@ abstract class OpenTelemetryA2ABaseTest extends BaseTest {
                 "Histogram should have at least one data point");
     }
 
+    @Test
+    void testPushNotificationDeliveryCreatesSpan() throws Exception {
+        String taskId = "push-test-task-1";
+        String contextId = "push-test-ctx-1";
+
+        Task task = Task.builder()
+                .id(taskId)
+                .contextId(contextId)
+                .status(new TaskStatus(TaskState.TASK_STATE_WORKING))
+                .history(Collections.emptyList())
+                .artifacts(Collections.emptyList())
+                .build();
+        saveTaskInTaskStore(task);
+        ensureQueueForTask(taskId);
+        reset();
+
+        try {
+            TaskPushNotificationConfig config = TaskPushNotificationConfig.builder()
+                    .id("push-test-config-1")
+                    .taskId(taskId)
+                    .url("http://localhost:" + serverPort + "/test/webhook")
+                    .build();
+            TaskPushNotificationConfig saved = client.createTaskPushNotificationConfiguration(config, null);
+            assertNotNull(saved);
+
+            reset();
+
+            TaskStatusUpdateEvent event = new TaskStatusUpdateEvent(
+                    taskId, new TaskStatus(TaskState.TASK_STATE_COMPLETED), contextId, null);
+            enqueueTaskStatusUpdateEventViaHttp(taskId, event);
+
+            await().atMost(15, SECONDS).until(() -> {
+                List<Map<String, Object>> spans = getSpans();
+                return spans.stream().anyMatch(s -> "SendPushNotification".equals(s.get("name")));
+            });
+
+            List<Map<String, Object>> spans = getSpans();
+            Map<String, Object> pushSpan = spans.stream()
+                    .filter(s -> "SendPushNotification".equals(s.get("name")))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("No SendPushNotification span found"));
+
+            assertEquals(Boolean.TRUE, pushSpan.get("ended"), "Push notification span should be ended");
+            assertEquals("CLIENT", pushSpan.get("kind"), "Push notification span should be CLIENT");
+            assertEquals(taskId, pushSpan.get("attr_gen_ai.agent.a2a.task_id"),
+                    "Task ID should be set on push notification span");
+            assertNotNull(pushSpan.get("attr_gen_ai.agent.a2a.push_notification.event_kind"),
+                    "Event kind should be set on push notification span");
+        } finally {
+            deleteTaskInTaskStore(taskId);
+        }
+    }
+
     protected void saveTaskInTaskStore(Task task) throws Exception {
         HttpClient httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)
@@ -380,6 +433,21 @@ abstract class OpenTelemetryA2ABaseTest extends BaseTest {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() != 200) {
             throw new RuntimeException(String.format("Ensuring queue failed! Status: %d, Body: %s", response.statusCode(), response.body()));
+        }
+    }
+
+    protected void enqueueTaskStatusUpdateEventViaHttp(String taskId, TaskStatusUpdateEvent event) throws Exception {
+        HttpClient httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
+                .build();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + serverPort + "/test/queue/enqueueTaskStatusUpdateEvent/" + taskId))
+                .POST(HttpRequest.BodyPublishers.ofString(JsonUtil.toJson(event)))
+                .header("Content-Type", "application/json")
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() != 200) {
+            throw new RuntimeException(String.format("Enqueue event failed! Status: %d, Body: %s", response.statusCode(), response.body()));
         }
     }
 }

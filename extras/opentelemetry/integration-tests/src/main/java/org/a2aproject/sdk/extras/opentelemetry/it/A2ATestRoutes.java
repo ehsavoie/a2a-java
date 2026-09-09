@@ -33,6 +33,7 @@ import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -45,6 +46,8 @@ public class A2ATestRoutes {
     private static final String APPLICATION_JSON = "application/json";
     private static final String TEXT_PLAIN = "text/plain";
     private static final Gson gson = new GsonBuilder().create();
+
+    private final AtomicInteger webhookCallCount = new AtomicInteger(0);
 
     @Inject
     TestUtilsBean testUtilsBean;
@@ -105,6 +108,14 @@ public class A2ATestRoutes {
         router.get("/reset-metrics")
             .produces(TEXT_PLAIN)
             .handler(ctx -> resetMetrics(ctx));
+
+        router.post("/test/webhook")
+            .handler(BodyHandler.create())
+            .handler(ctx -> receiveWebhook(ctx));
+
+        router.get("/test/webhook/count")
+            .produces(TEXT_PLAIN)
+            .handler(ctx -> getWebhookCount(ctx));
     }
 
     public void saveTask(String body, RoutingContext rc) {
@@ -309,8 +320,21 @@ public class A2ATestRoutes {
         rc.response().setStatusCode(200).end();
     }
 
+    public void receiveWebhook(RoutingContext rc) {
+        webhookCallCount.incrementAndGet();
+        rc.response().setStatusCode(200).end();
+    }
+
+    public void getWebhookCount(RoutingContext rc) {
+        rc.response()
+                .setStatusCode(200)
+                .putHeader(CONTENT_TYPE, TEXT_PLAIN)
+                .end(String.valueOf(webhookCallCount.get()));
+    }
+
     public void reset(RoutingContext rc) {
         inMemorySpanExporter.reset();
+        webhookCallCount.set(0);
         rc.response().setStatusCode(200).end();
     }
 
