@@ -13,9 +13,15 @@ import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil;
 import org.a2aproject.sdk.spec.Task;
 import org.a2aproject.sdk.spec.TaskArtifactUpdateEvent;
 import org.a2aproject.sdk.spec.TaskStatusUpdateEvent;
+import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.metrics.data.HistogramData;
+import io.opentelemetry.sdk.metrics.data.MetricData;
+import io.opentelemetry.sdk.metrics.data.MetricDataType;
+import io.opentelemetry.sdk.testing.exporter.InMemoryMetricExporter;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.vertx.ext.web.Router;
@@ -44,6 +50,10 @@ public class A2ATestRoutes {
     TestUtilsBean testUtilsBean;
     @Inject
     InMemorySpanExporter inMemorySpanExporter;
+    @Inject
+    InMemoryMetricExporter inMemoryMetricExporter;
+    @Inject
+    OpenTelemetry openTelemetry;
 
     @Inject
     Tracer tracer;
@@ -84,9 +94,17 @@ public class A2ATestRoutes {
             .produces(APPLICATION_JSON)
             .handler(ctx -> exportSpans(ctx));
 
+        router.get("/export-metrics")
+            .produces(APPLICATION_JSON)
+            .handler(ctx -> exportMetrics(ctx));
+
         router.get("/reset")
             .produces(TEXT_PLAIN)
             .handler(ctx -> reset(ctx));
+
+        router.get("/reset-metrics")
+            .produces(TEXT_PLAIN)
+            .handler(ctx -> resetMetrics(ctx));
     }
 
     public void saveTask(String body, RoutingContext rc) {
@@ -249,6 +267,48 @@ public class A2ATestRoutes {
         return spans;
     }
 
+    public void exportMetrics(RoutingContext rc) {
+        if (openTelemetry instanceof OpenTelemetrySdk sdk) {
+            sdk.getSdkMeterProvider().forceFlush();
+        }
+        List<MetricData> metrics = inMemoryMetricExporter.getFinishedMetricItems().stream()
+                .filter(m -> !m.getName().contains("export") && !m.getName().contains("reset"))
+                .collect(Collectors.toList());
+        rc.response()
+                .setStatusCode(200)
+                .putHeader(CONTENT_TYPE, APPLICATION_JSON)
+                .end(gson.toJson(serializeMetrics(metrics)));
+    }
+
+    private JsonElement serializeMetrics(List<MetricData> metricDataList) {
+        JsonArray result = new JsonArray(metricDataList.size());
+        for (MetricData m : metricDataList) {
+            JsonObject obj = new JsonObject();
+            obj.addProperty("name", m.getName());
+            obj.addProperty("description", m.getDescription());
+            obj.addProperty("unit", m.getUnit());
+            obj.addProperty("type", m.getType().name());
+            if (m.getType() == MetricDataType.HISTOGRAM) {
+                HistogramData histogram = m.getHistogramData();
+                obj.addProperty("data_count", histogram.getPoints().size());
+                histogram.getPoints().forEach(point -> {
+                    JsonObject pointObj = new JsonObject();
+                    pointObj.addProperty("count", point.getCount());
+                    pointObj.addProperty("sum", point.getSum());
+                    point.getAttributes().forEach((k, v) -> pointObj.addProperty("attr_" + k.getKey(), v.toString()));
+                    obj.add("point", pointObj);
+                });
+            }
+            result.add(obj);
+        }
+        return result;
+    }
+
+    public void resetMetrics(RoutingContext rc) {
+        inMemoryMetricExporter.reset();
+        rc.response().setStatusCode(200).end();
+    }
+
     public void reset(RoutingContext rc) {
         inMemorySpanExporter.reset();
         rc.response().setStatusCode(200).end();
@@ -269,6 +329,16 @@ public class A2ATestRoutes {
         @Singleton
         InMemorySpanExporter inMemorySpanExporter() {
             return InMemorySpanExporter.create();
+        }
+    }
+
+    @ApplicationScoped
+    static class InMemoryMetricExporterProducer {
+
+        @Produces
+        @Singleton
+        InMemoryMetricExporter inMemoryMetricExporter() {
+            return InMemoryMetricExporter.create();
         }
     }
 }

@@ -284,6 +284,42 @@ abstract class OpenTelemetryA2ABaseTest extends BaseTest {
                 "Closing span should link to the initial span");
     }
 
+    @Test
+    void testSendMessageStreamRecordsStreamingDuration() throws Exception {
+        reset();
+        given().get("/reset-metrics").then().statusCode(HTTP_OK);
+
+        Client streamingClient = Client.builder(A2A.getAgentCard("http://localhost:" + serverPort))
+                .clientConfig(new ClientConfig.Builder().setStreaming(true).build())
+                .withTransport(JSONRPCTransport.class, new JSONRPCTransportConfigBuilder())
+                .build();
+
+        Message message = Message.builder()
+                .role(Message.Role.ROLE_USER)
+                .parts(List.of(new TextPart("metric stream test")))
+                .messageId("metric-stream-msg-1")
+                .build();
+        MessageSendParams params = new MessageSendParams(message, null, null, "");
+
+        streamingClient.sendMessage(params, List.of(), null, null);
+
+        await().atMost(10, SECONDS).until(() -> {
+            List<Map<String, Object>> metrics = getMetrics();
+            return metrics.stream().anyMatch(m -> "gen_ai.agent.a2a.streaming.duration".equals(m.get("name")));
+        });
+
+        List<Map<String, Object>> metrics = getMetrics();
+        Map<String, Object> streamingMetric = metrics.stream()
+                .filter(m -> "gen_ai.agent.a2a.streaming.duration".equals(m.get("name")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No streaming duration metric found"));
+
+        assertEquals("HISTOGRAM", streamingMetric.get("type"),
+                "Streaming duration metric should be a histogram");
+        assertTrue(((Number) streamingMetric.get("data_count")).intValue() > 0,
+                "Histogram should have at least one data point");
+    }
+
     protected void saveTaskInTaskStore(Task task) throws Exception {
         HttpClient httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)

@@ -14,6 +14,7 @@ Adds distributed tracing and context propagation to A2A servers and clients usin
 - **Context Propagation**: OpenTelemetry trace context propagation across async operations
 - **Request/Response Logging**: Optional extraction of request and response data into spans
 - **Error Tracking**: Automatic error status and error type attributes on failures
+- **Metrics**: `gen_ai.client.operation.duration` histogram on the client side; `gen_ai.agent.a2a.streaming.duration` histogram for full streaming lifecycle on the server side
 
 ## Modules
 
@@ -115,6 +116,24 @@ Each span event on Span₂ carries:
 | `gen_ai.agent.a2a.streaming-event` | `toString()` of the published `StreamingEventKind` |
 | `gen_ai.agent.a2a.status.code` | `OK` |
 
+### Metrics
+
+The server decorator records the following histogram instruments:
+
+| Instrument | Type | Unit | Description |
+|------------|------|------|-------------|
+| `gen_ai.agent.a2a.streaming.duration` | Histogram | `s` | Duration from stream initiation to last event, for `message/stream` and `tasks/resubscribe` |
+
+Attributes on `gen_ai.agent.a2a.streaming.duration`:
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.agent.a2a.operation.name` | A2A method name (`message/stream` or `tasks/resubscribe`) |
+| `gen_ai.system` | `a2a` |
+| `error.type` | `error` (only on stream failure) |
+
+Meter injection uses CDI `Instance<Meter>`, so the histogram is silently skipped if no `Meter` bean is available in the container.
+
 ### Context-Aware Async Executor
 
 > **Note:** The `AsyncManagedExecutorProducer` is provided by the **Quarkus reference server** ([`reference/common`](https://github.com/a2aproject/a2a-java/blob/main/reference/common/src/main/java/org/a2aproject/sdk/server/common/quarkus/AsyncManagedExecutorProducer.java)), not the OpenTelemetry module. It is documented here because it enables context propagation (including trace context) across async boundaries.
@@ -174,7 +193,7 @@ Enable request and response data extraction in spans using JVM system properties
 
 ### Instrumentation
 
-Adds OpenTelemetry spans to A2A client operations:
+Adds OpenTelemetry spans and metrics to A2A client operations:
 
 ```xml
 <dependency>
@@ -182,6 +201,27 @@ Adds OpenTelemetry spans to A2A client operations:
     <artifactId>a2a-java-sdk-opentelemetry-client</artifactId>
 </dependency>
 ```
+
+To also enable `gen_ai.client.operation.duration` metrics, pass a `Meter` via the transport config:
+
+```java
+config.setParameters(Map.of(
+    OpenTelemetryClientTransportWrapper.OTEL_TRACER_KEY, openTelemetry.getTracer("my-service"),
+    OpenTelemetryClientTransportWrapper.OTEL_METER_KEY,  openTelemetry.getMeter("my-service")
+));
+```
+
+| Instrument | Type | Unit | Description |
+|------------|------|------|-------------|
+| `gen_ai.client.operation.duration` | Histogram | `s` | Duration of each A2A client operation call |
+
+Attributes on `gen_ai.client.operation.duration`:
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.agent.a2a.operation.name` | A2A method name (e.g. `message/send`) |
+| `gen_ai.system` | `a2a` |
+| `error.type` | `error` (only on failure) |
 
 ### Context Propagation
 

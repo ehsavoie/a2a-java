@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -22,6 +23,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.DoubleHistogram;
+import io.opentelemetry.api.metrics.DoubleHistogramBuilder;
+import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanBuilder;
 import io.opentelemetry.api.trace.SpanContext;
@@ -88,6 +92,15 @@ class OpenTelemetryRequestHandlerDecoratorTest {
     @Mock
     private RequestHandler delegate;
 
+    @Mock
+    private Meter meter;
+
+    @Mock
+    private DoubleHistogramBuilder histogramBuilder;
+
+    @Mock
+    private DoubleHistogram streamingHistogram;
+
     private TestableOpenTelemetryRequestHandlerDecorator decorator;
 
     @BeforeEach
@@ -109,8 +122,14 @@ class OpenTelemetryRequestHandlerDecoratorTest {
         lenient().when(span.setStatus(any(StatusCode.class))).thenReturn(span);
         lenient().when(span.setStatus(any(StatusCode.class), anyString())).thenReturn(span);
 
+        // Set up meter mock chain
+        lenient().when(meter.histogramBuilder(anyString())).thenReturn(histogramBuilder);
+        lenient().when(histogramBuilder.setUnit(anyString())).thenReturn(histogramBuilder);
+        lenient().when(histogramBuilder.setDescription(anyString())).thenReturn(histogramBuilder);
+        lenient().when(histogramBuilder.build()).thenReturn(streamingHistogram);
+
         // Create decorator with mocked dependencies
-        decorator = new TestableOpenTelemetryRequestHandlerDecorator(delegate, tracer);
+        decorator = new TestableOpenTelemetryRequestHandlerDecorator(delegate, tracer, meter);
     }
 
     /**
@@ -119,6 +138,10 @@ class OpenTelemetryRequestHandlerDecoratorTest {
     static class TestableOpenTelemetryRequestHandlerDecorator extends OpenTelemetryRequestHandlerDecorator {
         public TestableOpenTelemetryRequestHandlerDecorator(RequestHandler delegate, Tracer tracer) {
             super(delegate, tracer);
+        }
+
+        public TestableOpenTelemetryRequestHandlerDecorator(RequestHandler delegate, Tracer tracer, Meter meter) {
+            super(delegate, tracer, meter);
         }
     }
 
@@ -365,6 +388,7 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(closingSpan).setStatus(StatusCode.OK);
             verify(closingSpan).end();
             verify(testSubscriber).onComplete();
+            verify(streamingHistogram).record(anyDouble(), any(Attributes.class));
         }
 
         @Test
@@ -409,6 +433,7 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(closingSpan).setStatus(StatusCode.ERROR, "stream failure");
             verify(closingSpan).end();
             verify(testSubscriber).onError(error);
+            verify(streamingHistogram).record(anyDouble(), any(Attributes.class));
         }
 
         @Test
@@ -459,6 +484,7 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(closingSpan).setStatus(StatusCode.OK);
             verify(closingSpan).end();
             verify(testSubscriber).onComplete();
+            verify(streamingHistogram).record(anyDouble(), any(Attributes.class));
         }
     }
 
@@ -591,6 +617,7 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(closingSpan).setStatus(StatusCode.OK);
             verify(closingSpan).end();
             verify(testSubscriber).onComplete();
+            verify(streamingHistogram).record(anyDouble(), any(Attributes.class));
         }
 
         @Test
@@ -630,6 +657,7 @@ class OpenTelemetryRequestHandlerDecoratorTest {
             verify(closingSpan).setStatus(StatusCode.ERROR, "subscribe failure");
             verify(closingSpan).end();
             verify(testSubscriber).onError(error);
+            verify(streamingHistogram).record(anyDouble(), any(Attributes.class));
         }
     }
 

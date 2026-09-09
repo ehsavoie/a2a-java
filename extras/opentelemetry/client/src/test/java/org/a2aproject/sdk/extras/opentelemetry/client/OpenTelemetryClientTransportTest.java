@@ -25,6 +25,9 @@ import org.a2aproject.sdk.spec.Task;
 import org.a2aproject.sdk.spec.TaskIdParams;
 import org.a2aproject.sdk.spec.TaskPushNotificationConfig;
 import org.a2aproject.sdk.spec.TaskQueryParams;
+import io.opentelemetry.api.metrics.DoubleHistogram;
+import io.opentelemetry.api.metrics.DoubleHistogramBuilder;
+import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanBuilder;
 import io.opentelemetry.api.trace.SpanContext;
@@ -33,6 +36,7 @@ import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -452,6 +456,55 @@ class OpenTelemetryClientTransportTest {
         assertEquals(expectedException, exception);
         verify(span).setStatus(StatusCode.ERROR, "Resubscribe failed");
         verify(span).end();
+    }
+
+    @Nested
+    class MetricsTests {
+
+        @Mock
+        private Meter meter;
+
+        @Mock
+        private DoubleHistogramBuilder histogramBuilder;
+
+        @Mock
+        private DoubleHistogram histogram;
+
+        @BeforeEach
+        void setUpMeter() {
+            lenient().when(meter.histogramBuilder(anyString())).thenReturn(histogramBuilder);
+            lenient().when(histogramBuilder.setUnit(anyString())).thenReturn(histogramBuilder);
+            lenient().when(histogramBuilder.setDescription(anyString())).thenReturn(histogramBuilder);
+            lenient().when(histogramBuilder.build()).thenReturn(histogram);
+        }
+
+        @Test
+        void sendMessage_recordsOperationDuration() throws A2AClientException {
+            OpenTelemetryClientTransport transportWithMeter = new OpenTelemetryClientTransport(delegate, tracer, meter);
+            MessageSendParams request = mock(MessageSendParams.class);
+            EventKind expectedResult = mock(EventKind.class);
+            when(request.toString()).thenReturn("request-string");
+            when(expectedResult.toString()).thenReturn("response-string");
+            when(delegate.sendMessage(eq(request), any(ClientCallContext.class))).thenReturn(expectedResult);
+
+            transportWithMeter.sendMessage(request, context);
+
+            verify(histogram).record(anyDouble(), any(io.opentelemetry.api.common.Attributes.class));
+        }
+
+        @Test
+        void sendMessage_noHistogramWhenNoMeter() throws A2AClientException {
+            // transport without meter — should not throw, histogram never invoked
+            MessageSendParams request = mock(MessageSendParams.class);
+            EventKind expectedResult = mock(EventKind.class);
+            when(request.toString()).thenReturn("request-string");
+            when(expectedResult.toString()).thenReturn("response-string");
+            when(delegate.sendMessage(eq(request), any(ClientCallContext.class))).thenReturn(expectedResult);
+
+            transport.sendMessage(request, context);
+
+            verify(histogram, never()).record(anyDouble(), any(io.opentelemetry.api.common.Attributes.class));
+        }
     }
 
     @Test
